@@ -1,0 +1,39 @@
+services:
+  db:
+    image: mysql:8.0
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: ITHelpdeskDB
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      # -h 127.0.0.1 (TCP) để chỉ báo healthy sau khi init.sql chạy xong
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot123"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  api:
+    build: ./HelpdeskApi
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ConnectionStrings__Default: "Server=db;Port=3306;Database=ITHelpdeskDB;User=root;Password=root123"
+      Jwt__Key: "day-la-khoa-bi-mat-cho-bai-tap-nhom-it-helpdesk-2026"
+    ports:
+      - "8080:8080"
+
+  # web:  # Commented out - frontend is in a separate workspace (fontend/)
+  #   build: ./frontend
+  #   depends_on:
+  #     - api
+  #   ports:
+  #     - "3000:80"
+
+volumes:
+  mysql_data:
