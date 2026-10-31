@@ -1,8 +1,23 @@
 # IT Helpdesk Ticket Management System
 
-Bài tập nhóm PRN: **ASP.NET Core 8 Web API** (JWT) + **MySQL 8** (Database First) + **React (Vite)**, chạy bằng Docker.
+Bài tập nhóm PRN: **ASP.NET Core 8 Web API** (JWT) + **SQL Server 2022** (Database First) + **React (Vite)**, chạy bằng Docker.
 
 ## Chạy dự án
+
+```bash
+docker compose up db -d
+```
+
+Đợi SQL Server sẵn sàng (lần đầu khoảng 30–60 giây). Mở **SQL Server Management Studio**:
+
+- Server: `localhost`
+- Authentication: SQL Server Authentication
+- Login: `sa`
+- Password: `Root@12345`
+
+File → Open → `db/ITHelpdesk_DatabaseFirst.sql` → Execute (F5). Script tạo database `ITHelpdeskDB`, các bảng và 6 danh mục. Chạy script lần hai sẽ lỗi vì bảng đã tồn tại; muốn tạo lại thì xóa database `ITHelpdeskDB` trong Object Explorer rồi Execute lại.
+
+Sau đó chạy API (và frontend nếu cần):
 
 ```bash
 docker compose up --build
@@ -12,14 +27,16 @@ docker compose up --build
 |---|---|
 | Frontend React | http://localhost:3000 |
 | Swagger (API) | http://localhost:8080/swagger |
-| MySQL | `localhost:3307`, user `root`, pass `root123`, DB `ITHelpdeskDB` |
+| SQL Server | `localhost,1433`, login `sa`, password `Root@12345`, DB `ITHelpdeskDB` |
 
-Lần đầu MySQL tự chạy `db/init.sql` (tạo bảng + 6 danh mục); API tự seed 5 tài khoản mẫu khi khởi động.
-Muốn tạo lại DB từ đầu: `docker compose down -v` rồi chạy lại.
+API tự seed 5 tài khoản mẫu khi khởi động, sau khi bảng đã có.
+Muốn xóa dữ liệu container: `docker compose down -v` rồi chạy lại và Execute script trong SSMS.
+
+Nếu máy đã có SQL Server chiếm cổng 1433, map Docker sang `14333:1433` và đổi connection string local thành `localhost,14333`.
 
 ### Chạy dev không qua Docker
 ```bash
-docker compose up db -d                     # chỉ MySQL
+docker compose up db -d                     # chỉ SQL Server
 cd HelpdeskApi && dotnet run                # API  :8080
 cd frontend && npm install && npm run dev   # React :5173 (proxy /api -> :8080)
 ```
@@ -36,10 +53,9 @@ cd frontend && npm install && npm run dev   # React :5173 (proxy /api -> :8080)
 
 ## Database First
 
-- `db/init.sql` là bản MySQL của `ITHelpdesk_DatabaseFirst.sql` (giữ nguyên tên bảng, cột, ràng buộc CHECK/UNIQUE/FK).
+- Schema chạy trong SSMS bằng `db/ITHelpdesk_DatabaseFirst.sql`. `db/init.sql` là bản MySQL cũ, container không dùng file đó.
 - Backend **không** tạo/migrate bảng. `Data/AppDbContext.cs` chỉ map entity vào tên bảng/cột có sẵn.
 - `TicketAttachments` và `Notifications` đã có trong DB nhưng chưa có API (Phase 2).
-- Nếu nhóm dùng SQL Server thật: đổi package `Pomelo.EntityFrameworkCore.MySql` thành `Microsoft.EntityFrameworkCore.SqlServer`, `UseMySql(...)` thành `UseSqlServer(...)`, và chạy file SQL gốc của nhóm. Entity và controller giữ nguyên.
 
 ## Kịch bản demo
 1. **User** login → *+ Tạo ticket* (Network) → `TCK-0001`, Open.
@@ -50,7 +66,7 @@ cd frontend && npm install && npm run dev   # React :5173 (proxy /api -> :8080)
 
 ## Cấu trúc
 ```
-db/init.sql          schema MySQL + dữ liệu danh mục
+db/ITHelpdesk_DatabaseFirst.sql   schema SQL Server + dữ liệu danh mục
 HelpdeskApi/         Controllers, Services (TicketService = workflow + phân quyền), Models, Dtos, Data
 frontend/src/        pages (Login, Dashboard, Tickets, NewTicket, TicketDetail, Admin), api.js, auth.jsx
 ```

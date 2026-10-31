@@ -8,7 +8,7 @@ var builder = WebApplication.CreateBuilder(args);
 var cfg = builder.Configuration;
 
 builder.Services.AddDbContext<AppDbContext>(o =>
-    o.UseMySql(cfg.GetConnectionString("Default"), new MySqlServerVersion(new Version(8, 0, 36))));
+    o.UseSqlServer(cfg.GetConnectionString("Default")));
 
 builder.Services.AddScoped<TicketService>();
 builder.Services.AddSingleton<TokenService>();
@@ -76,7 +76,7 @@ app.UseAuthorization();
 app.MapControllers();
 app.MapGet("/", () => Results.Redirect("/swagger"));
 
-// Seed tài khoản mẫu (thử lại vài lần để chờ MySQL chạy xong init.sql)
+// Seed tài khoản mẫu (thử lại vài lần để chờ SQL Server sẵn sàng)
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();

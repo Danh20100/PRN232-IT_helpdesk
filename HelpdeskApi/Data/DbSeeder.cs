@@ -2,7 +2,7 @@ namespace HelpdeskApi.Data;
 
 public static class DbSeeder
 {
-    /// <summary>Categories đã có trong db/init.sql. Ở đây chỉ tạo tài khoản mẫu với hash BCrypt thật.</summary>
+    /// <summary>Categories đã có trong db/ITHelpdesk_DatabaseFirst.sql. Ở đây chỉ tạo tài khoản mẫu với hash BCrypt thật.</summary>
     public static void Seed(AppDbContext db)
     {
         if (db.Users.Any()) return;

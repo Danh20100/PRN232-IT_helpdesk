@@ -1,6 +1,6 @@
 namespace HelpdeskApi.Data;
 
-/// <summary>Database First: DB do db/init.sql tạo, EF Core chỉ map tên bảng/cột (không tạo/migrate bảng).</summary>
+/// <summary>Database First: DB do db/ITHelpdesk_DatabaseFirst.sql tạo, EF Core chỉ map tên bảng/cột (không tạo/migrate bảng).</summary>
 public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
 {
     public DbSet<User> Users => Set<User>();

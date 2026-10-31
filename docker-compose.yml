@@ -1,29 +1,20 @@
 services:
   db:
-    image: mysql:8.0
-    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    image: mcr.microsoft.com/mssql/server:2022-latest
     environment:
-      MYSQL_ROOT_PASSWORD: root123
-      MYSQL_DATABASE: ITHelpdeskDB
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Root@12345"
     ports:
-      - "3307:3306"
+      - "1433:1433"
     volumes:
-      - mysql_data:/var/lib/mysql
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    healthcheck:
-      # -h 127.0.0.1 (TCP) để chỉ báo healthy sau khi init.sql chạy xong
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot123"]
-      interval: 5s
-      timeout: 5s
-      retries: 30
+      - mssql_data:/var/opt/mssql
 
   api:
     build: ./HelpdeskApi
     depends_on:
-      db:
-        condition: service_healthy
+      - db
     environment:
-      ConnectionStrings__Default: "Server=db;Port=3306;Database=ITHelpdeskDB;User=root;Password=root123"
+      ConnectionStrings__Default: "Server=db,1433;Database=ITHelpdeskDB;User Id=sa;Password=Root@12345;TrustServerCertificate=True"
       Jwt__Key: "day-la-khoa-bi-mat-cho-bai-tap-nhom-it-helpdesk-2026"
     ports:
       - "8080:8080"
@@ -36,4 +27,4 @@ services:
   #     - "3000:80"
 
 volumes:
-  mysql_data:
+  mssql_data:
