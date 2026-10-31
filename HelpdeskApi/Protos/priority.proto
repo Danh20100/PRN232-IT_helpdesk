@@ -1,0 +1,16 @@
+syntax = "proto3";
+option csharp_namespace = "HelpdeskApi.Grpc";
+package helpdesk;
+
+service Priority {
+  rpc Suggest (SuggestRequest) returns (SuggestReply);
+}
+
+message SuggestRequest {
+  string category_name = 1;
+}
+
+message SuggestReply {
+  string priority = 1;
+  int32 sla_hours = 2;
+}

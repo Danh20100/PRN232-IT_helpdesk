@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 var cfg = builder.Configuration;
@@ -10,7 +11,14 @@ var cfg = builder.Configuration;
 builder.Services.AddDbContext<AppDbContext>(o =>
     o.UseSqlServer(cfg.GetConnectionString("Default")));
 
+builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
+    ConnectionMultiplexer.Connect(cfg["Redis"] ?? "localhost:6379,abortConnect=false"));
+builder.Services.AddScoped<AppRepository>();
 builder.Services.AddScoped<TicketService>();
+builder.Services.AddScoped<UserService>();
+builder.Services.AddScoped<CategoryService>();
+builder.Services.AddSingleton<TicketPublisher>();
+builder.Services.AddSingleton<PriorityClient>();
 builder.Services.AddSingleton<TokenService>();
 
 builder.Services.AddControllers()

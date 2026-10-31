@@ -4,4 +4,5 @@ global using Microsoft.EntityFrameworkCore;
 global using HelpdeskApi.Data;
 global using HelpdeskApi.Dtos;
 global using HelpdeskApi.Models;
+global using HelpdeskApi.Repositories;
 global using HelpdeskApi.Services;

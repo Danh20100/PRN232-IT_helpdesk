@@ -1,23 +1,36 @@
 # IT Helpdesk Ticket Management System
 
-Bài tập nhóm PRN: **ASP.NET Core 8 Web API** (JWT) + **SQL Server 2022** (Database First) + **React (Vite)**, chạy bằng Docker.
+Bài tập nhóm PRN232: ASP.NET Core 8 (JWT, EF Core, SQL Server 2022) + Redis Pub/Sub + gRPC + BackgroundService. React (Vite) là phần thêm, nằm ở thư mục `fontend` cạnh repo này.
 
-## Chạy dự án
+## Kiến trúc
+
+```
+React --> HelpdeskApi (REST, JWT)
+            |-- SQL Server (EF Core, Database First)
+            |-- gRPC Helpdesk.Priority (priority + SLA khi tạo ticket)
+            |-- Redis channel ticket.status.changed
+HelpdeskWorker (BackgroundService) <-- Redis --> bảng Notifications
+```
+
+API → Service (`TicketService`, `UserService`, `CategoryService`) → `AppRepository` → `AppDbContext`.
+
+## Công nghệ
+
+ASP.NET Core 8, Entity Framework Core, SQL Server, JWT, Swagger, Dependency Injection, Redis Pub/Sub, gRPC, `BackgroundService`, Docker Compose.
+
+## Cài đặt
+
+Cần Docker Desktop và (để chạy script DB) SQL Server Management Studio.
+
+1. Bật SQL Server:
 
 ```bash
 docker compose up db -d
 ```
 
-Đợi SQL Server sẵn sàng (lần đầu khoảng 30–60 giây). Mở **SQL Server Management Studio**:
+Đợi lần đầu khoảng 30–60 giây. SSMS: server `localhost`, SQL Authentication, login `sa`, password `Root@12345`. Mở `db/ITHelpdesk_DatabaseFirst.sql` rồi Execute. Script tạo `ITHelpdeskDB`, bảng và 6 danh mục. Chạy lần hai sẽ lỗi vì bảng đã có; muốn tạo lại thì xóa database rồi Execute lại.
 
-- Server: `localhost`
-- Authentication: SQL Server Authentication
-- Login: `sa`
-- Password: `Root@12345`
-
-File → Open → `db/ITHelpdesk_DatabaseFirst.sql` → Execute (F5). Script tạo database `ITHelpdeskDB`, các bảng và 6 danh mục. Chạy script lần hai sẽ lỗi vì bảng đã tồn tại; muốn tạo lại thì xóa database `ITHelpdeskDB` trong Object Explorer rồi Execute lại.
-
-Sau đó chạy API (và frontend nếu cần):
+2. Dựng cả hệ:
 
 ```bash
 docker compose up --build
@@ -25,49 +38,74 @@ docker compose up --build
 
 | Thành phần | Địa chỉ |
 |---|---|
-| Frontend React | http://localhost:3000 |
-| Swagger (API) | http://localhost:8080/swagger |
-| SQL Server | `localhost,1433`, login `sa`, password `Root@12345`, DB `ITHelpdeskDB` |
+| Swagger | http://localhost:8080/swagger |
+| gRPC priority | `localhost:5001` (HTTP/2) |
+| Redis | `localhost:6379`, channel `ticket.status.changed` |
+| SQL Server | `localhost,1433`, DB `ITHelpdeskDB` |
+| React | http://localhost:5173 khi chạy `npm run dev` trong `../fontend` |
 
-API tự seed 5 tài khoản mẫu khi khởi động, sau khi bảng đã có.
-Muốn xóa dữ liệu container: `docker compose down -v` rồi chạy lại và Execute script trong SSMS.
+Compose gồm `db`, `redis`, `priority`, `worker`, `api`. Service `web` đang tắt vì frontend nằm ngoài repo.
 
-Nếu máy đã có SQL Server chiếm cổng 1433, map Docker sang `14333:1433` và đổi connection string local thành `localhost,14333`.
+API seed 5 tài khoản khi khởi động, sau khi bảng đã có. Xóa volume: `docker compose down -v`, rồi Execute lại script SQL.
 
-### Chạy dev không qua Docker
+Nếu cổng 1433 đã bị SQL Server trên máy chiếm, đổi map thành `14333:1433` và connection string local thành `localhost,14333`.
+
+### Chạy dev không Docker hóa API
+
 ```bash
-docker compose up db -d                     # chỉ SQL Server
-cd HelpdeskApi && dotnet run                # API  :8080
-cd frontend && npm install && npm run dev   # React :5173 (proxy /api -> :8080)
+docker compose up db redis priority -d
+cd HelpdeskApi && dotnet run
+cd HelpdeskWorker && dotnet run
+cd ../fontend && npm install && npm run dev
 ```
+
+`appsettings.json` trỏ Redis `localhost:6379` và gRPC `http://localhost:5001`.
+
+## Luồng liên service
+
+- Tạo ticket: API gọi gRPC. Network/Security → High, SLA 8 giờ. Hardware/Printer → Medium, 24 giờ. Còn lại → Low, 72 giờ. `DueDate` = thời điểm tạo + SLA. gRPC không lên thì giữ priority client gửi và ghi log.
+- Đổi trạng thái: API publish Redis. Worker ghi `Notifications` cho người tạo và staff được giao. Redis không lên thì đổi trạng thái vẫn lưu, chỉ mất thông báo.
+
+Danh sách ticket: `search`, `status`, `categoryId`, `priority`, `sort` (`created` | `priority` | `status`), `page`, `pageSize`.
 
 ## Tài khoản mẫu
 
-| Role  | Email                  | Mật khẩu   |
-|-------|------------------------|------------|
-| Admin | admin@helpdesk.local   | Admin@123  |
-| Staff | staff1@helpdesk.local  | Staff@123  |
-| Staff | staff2@helpdesk.local  | Staff@123  |
-| User  | user1@helpdesk.local   | User@123   |
-| User  | user2@helpdesk.local   | User@123   |
+| Role | Email | Mật khẩu |
+|---|---|---|
+| Admin | admin@helpdesk.local | Admin@123 |
+| Staff | staff1@helpdesk.local | Staff@123 |
+| Staff | staff2@helpdesk.local | Staff@123 |
+| User | user1@helpdesk.local | User@123 |
+| User | user2@helpdesk.local | User@123 |
 
 ## Database First
 
-- Schema chạy trong SSMS bằng `db/ITHelpdesk_DatabaseFirst.sql`. `db/init.sql` là bản MySQL cũ, container không dùng file đó.
-- Backend **không** tạo/migrate bảng. `Data/AppDbContext.cs` chỉ map entity vào tên bảng/cột có sẵn.
-- `TicketAttachments` và `Notifications` đã có trong DB nhưng chưa có API (Phase 2).
+Schema do `db/ITHelpdesk_DatabaseFirst.sql` tạo. `db/init.sql` là bản MySQL cũ, container không dùng. Backend không migrate; `AppDbContext` chỉ map bảng có sẵn. `TicketAttachments` chưa có API. `Notifications` do worker ghi, chưa có API đọc.
 
-## Kịch bản demo
-1. **User** login → *+ Tạo ticket* (Network) → `TCK-0001`, Open.
-2. **Admin** → mở ticket → chọn Staff, *Phân công*.
-3. **Staff A** → *Bắt đầu xử lý* → trao đổi qua bình luận → nhập ghi chú, *Đã xử lý xong*.
-4. **User** → *Xác nhận đã hết lỗi* (hoặc *Vẫn còn lỗi*) → gửi đánh giá 5 sao.
-5. **Admin** → Dashboard xem thống kê.
+## Demo
+
+1. User login → tạo ticket danh mục Network → mã `TCK-0001`, priority High, DueDate +8 giờ (gRPC).
+2. Admin phân công Staff.
+3. Staff chuyển InProgress → Resolved (có ghi chú). Mỗi lần đổi trạng thái, worker thêm dòng `Notifications`.
+4. User đóng ticket (Closed) hoặc mở lại, rồi gửi đánh giá.
+5. Admin xem dashboard.
 
 ## Cấu trúc
+
 ```
-db/ITHelpdesk_DatabaseFirst.sql   schema SQL Server + dữ liệu danh mục
-HelpdeskApi/         Controllers, Services (TicketService = workflow + phân quyền), Models, Dtos, Data
-frontend/src/        pages (Login, Dashboard, Tickets, NewTicket, TicketDetail, Admin), api.js, auth.jsx
+db/ITHelpdesk_DatabaseFirst.sql
+HelpdeskApi/          REST, repository, Redis producer, gRPC client
+Helpdesk.Priority/    gRPC server
+HelpdeskWorker/       Redis consumer
 ```
-Mọi kiểm tra quyền/workflow nằm ở backend; React chỉ ẩn/hiện nút cho tiện.
+
+## Trách nhiệm thành viên
+
+Điền tên trước khi nộp.
+
+| Việc | Thành viên |
+|---|---|
+| REST API, JWT, repository | |
+| gRPC priority | |
+| Redis + worker | |
+| Docker, README, demo | |
