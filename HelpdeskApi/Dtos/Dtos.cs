@@ -20,7 +20,7 @@ public record SaveCategoryDto([Required, StringLength(100)] string Name, string?
 
 // ---- Ticket ----
 public record CreateTicketDto([Required, StringLength(200)] string Title, [Required] string Description,
-    int CategoryId, TicketPriority Priority = TicketPriority.Medium);
+    int CategoryId, TicketPriority Priority = TicketPriority.Medium, int? StaffId = null);
 public record UpdateTicketDto([Required, StringLength(200)] string Title, [Required] string Description,
     int CategoryId, TicketPriority Priority = TicketPriority.Medium);
 public record AssignDto(int StaffId, DateTime? DueDate);
@@ -30,13 +30,13 @@ public record ChangeStatusDto(TicketStatus Status, string? Note);
 public record TicketDto(int Id, string Code, string Title, string Description, string Category,
     TicketPriority Priority, TicketStatus Status, int CreatedById, string CreatedBy,
     int? AssignedToId, string? AssignedTo, DateTime CreatedAt, DateTime? DueDate,
-    DateTime? ResolvedAt, DateTime? ClosedAt)
+    DateTime? ResolvedAt, DateTime? ClosedAt, int CategoryId)
 {
     public static readonly Expression<Func<Ticket, TicketDto>> Projection = t => new TicketDto(
         t.Id, t.Code, t.Title, t.Description, t.Category!.Name, t.Priority, t.Status,
         t.CreatedById, t.CreatedBy!.FullName, t.AssignedToId,
         t.AssignedTo != null ? t.AssignedTo.FullName : null,
-        t.CreatedAt, t.DueDate, t.ResolvedAt, t.ClosedAt);
+        t.CreatedAt, t.DueDate, t.ResolvedAt, t.ClosedAt, t.CategoryId);
 }
 
 public record PagedResult<T>(int Page, int PageSize, int Total, List<T> Items);

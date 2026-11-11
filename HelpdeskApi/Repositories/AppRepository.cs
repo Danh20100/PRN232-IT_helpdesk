@@ -12,5 +12,7 @@ public class AppRepository(AppDbContext db)
     public IQueryable<TicketFeedback> Feedbacks => db.Feedbacks;
 
     public void Add<T>(T entity) where T : class => db.Add(entity);
+    public Task<Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction> BeginTransactionAsync()
+        => db.Database.BeginTransactionAsync();
     public Task<int> SaveAsync() => db.SaveChangesAsync();
 }

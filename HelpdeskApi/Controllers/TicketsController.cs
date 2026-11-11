@@ -3,10 +3,10 @@ namespace HelpdeskApi.Controllers;
 [ApiController, Route("api/tickets"), Authorize]
 public class TicketsController(TicketService svc) : ControllerBase
 {
-    [HttpPost, Authorize(Roles = "User")]
+    [HttpPost, Authorize(Roles = "User,Admin")]
     public async Task<IActionResult> Create(CreateTicketDto dto)
     {
-        var t = await svc.CreateAsync(User.GetId(), dto);
+        var t = await svc.CreateAsync(User.GetId(), User.GetRole(), dto);
         return CreatedAtAction(nameof(Get), new { id = t.Id }, t);
     }
 
@@ -19,7 +19,7 @@ public class TicketsController(TicketService svc) : ControllerBase
     [HttpGet("{id:int}")]
     public async Task<IActionResult> Get(int id) => Ok(await svc.GetDtoAsync(id, User.GetId(), User.GetRole()));
 
-    [HttpPut("{id:int}"), Authorize(Roles = "User")]
+    [HttpPut("{id:int}"), Authorize(Roles = "User,Admin")]
     public async Task<IActionResult> Update(int id, UpdateTicketDto dto)
         => Ok(await svc.UpdateAsync(id, User.GetId(), dto));
 
@@ -55,7 +55,7 @@ public class TicketsController(TicketService svc) : ControllerBase
     public async Task<IActionResult> AddComment(int id, CommentRequest dto)
         => Ok(await svc.AddCommentAsync(id, User.GetId(), User.GetRole(), dto.Content));
 
-    [HttpPost("{id:int}/feedback"), Authorize(Roles = "User")]
+    [HttpPost("{id:int}/feedback"), Authorize(Roles = "User,Admin")]
     public async Task<IActionResult> AddFeedback(int id, FeedbackRequest dto)
         => Ok(await svc.AddFeedbackAsync(id, User.GetId(), dto));
 

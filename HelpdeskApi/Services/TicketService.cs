@@ -56,8 +56,14 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
         return t;
     }
 
-    public async Task<TicketDto> CreateAsync(int userId, CreateTicketDto dto)
+    public async Task<TicketDto> CreateAsync(int userId, Role role, CreateTicketDto dto)
     {
+        if (dto.StaffId is int staffId)
+        {
+            if (role != Role.Admin) throw new AppException(403, "Chỉ Admin được phân công nhân viên");
+            await EnsureActiveStaffAsync(staffId);
+        }
+
         var cat = await repo.Categories.FirstOrDefaultAsync(c => c.Id == dto.CategoryId && c.IsActive)
             ?? throw new AppException(400, "Danh mục không hợp lệ");
         var suggested = await priority.SuggestAsync(cat.Name);
@@ -70,12 +76,22 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
             Priority = suggested?.Priority ?? dto.Priority,
             DueDate = suggested is null ? null : DateTime.UtcNow.AddHours(suggested.Value.SlaHours),
             CreatedById = userId,
+            AssignedToId = dto.StaffId,
             Status = TicketStatus.Open
         };
+        await using var transaction = await repo.BeginTransactionAsync();
         repo.Add(t);
+        if (dto.StaffId is int assigneeId)
+        {
+            repo.Add(new TicketAssignmentHistory
+            {
+                Ticket = t, AssignedById = userId, NewAssigneeId = assigneeId
+            });
+        }
         await repo.SaveAsync();
         t.Code = $"TCK-{t.Id:D4}";
         await repo.SaveAsync();
+        await transaction.CommitAsync();
         log.LogInformation("Created {Code} priority {Priority}", t.Code, t.Priority);
         return await repo.Tickets.Where(x => x.Id == t.Id).Select(TicketDto.Projection).FirstAsync();
     }
@@ -124,14 +140,18 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
         return await repo.Tickets.Where(x => x.Id == id).Select(TicketDto.Projection).FirstAsync();
     }
 
+    private async Task EnsureActiveStaffAsync(int staffId)
+    {
+        if (!await repo.Users.AnyAsync(u => u.Id == staffId && u.Role == Role.Staff && u.IsActive))
+            throw new AppException(400, "Người nhận phải là Staff đang hoạt động");
+    }
+
     public async Task<TicketDto> AssignAsync(int id, int adminId, int staffId, DateTime? dueDate)
     {
         var t = await repo.Tickets.FirstOrDefaultAsync(x => x.Id == id) ?? throw new AppException(404, "Ticket không tồn tại");
         if (t.Status is TicketStatus.Closed or TicketStatus.Cancelled)
             throw new AppException(400, "Không thể phân công ticket đã Closed/Cancelled");
-        var staff = await repo.Users.FirstOrDefaultAsync(u => u.Id == staffId);
-        if (staff is null || staff.Role != Role.Staff || !staff.IsActive)
-            throw new AppException(400, "Người nhận phải là Staff đang hoạt động");
+        await EnsureActiveStaffAsync(staffId);
         if (t.AssignedToId == staffId)
             throw new AppException(400, "Ticket đã được giao cho nhân viên này");
         repo.Add(new TicketAssignmentHistory
