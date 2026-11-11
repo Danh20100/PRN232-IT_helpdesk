@@ -63,7 +63,7 @@ cd ../fontend && npm install && npm run dev
 
 ## Luồng liên service
 
-- Tạo ticket: API gọi gRPC. Network/Security → High, SLA 8 giờ. Hardware/Printer → Medium, 24 giờ. Còn lại → Low, 72 giờ. `DueDate` = thời điểm tạo + SLA. gRPC không lên thì giữ priority client gửi và ghi log.
+- Khi tạo ticket, API lưu mức ưu tiên đã chọn. Nếu chọn **Tự động theo danh mục** hoặc bỏ qua `priority`, API dùng gợi ý từ gRPC. Network hoặc Security nhận High với 8 giờ, Hardware hoặc Printer nhận Medium với 24 giờ, các danh mục khác nhận Low với 72 giờ. Hạn xử lý tính từ SLA theo danh mục. Nếu gRPC không phản hồi, ticket vẫn được tạo với mức đã chọn hoặc mặc định Medium và hạn xử lý để trống.
 - Đổi trạng thái: API publish Redis. Worker ghi `Notifications` cho người tạo và staff được giao. Redis không lên thì đổi trạng thái vẫn lưu, chỉ mất thông báo.
 
 Danh sách ticket: `search`, `status`, `categoryId`, `priority`, `sort` (`created` | `priority` | `status`), `page`, `pageSize`.
@@ -84,7 +84,7 @@ Schema do `db/ITHelpdesk_DatabaseFirst.sql` tạo. `db/init.sql` là bản MySQL
 
 ## Demo
 
-1. User login → tạo ticket danh mục Network → mã `TCK-0001`, priority High, DueDate +8 giờ (gRPC).
+1. User login → tạo ticket danh mục Network với ưu tiên **Tự động theo danh mục** → mã `TCK-0001`, priority High, DueDate +8 giờ (gRPC).
 2. Admin phân công Staff.
 3. Staff chuyển InProgress → Resolved (có ghi chú). Mỗi lần đổi trạng thái, worker thêm dòng `Notifications`.
 4. User đóng ticket (Closed) hoặc mở lại, rồi gửi đánh giá.

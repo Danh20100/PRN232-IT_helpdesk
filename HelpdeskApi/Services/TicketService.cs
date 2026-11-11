@@ -73,7 +73,7 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
             Title = dto.Title.Trim(),
             Description = dto.Description.Trim(),
             CategoryId = dto.CategoryId,
-            Priority = suggested?.Priority ?? dto.Priority,
+            Priority = dto.Priority ?? suggested?.Priority ?? TicketPriority.Medium,
             DueDate = suggested is null ? null : DateTime.UtcNow.AddHours(suggested.Value.SlaHours),
             CreatedById = userId,
             AssignedToId = dto.StaffId,

@@ -20,7 +20,7 @@ public record SaveCategoryDto([Required, StringLength(100)] string Name, string?
 
 // ---- Ticket ----
 public record CreateTicketDto([Required, StringLength(200)] string Title, [Required] string Description,
-    int CategoryId, TicketPriority Priority = TicketPriority.Medium, int? StaffId = null);
+    int CategoryId, TicketPriority? Priority = null, int? StaffId = null);
 public record UpdateTicketDto([Required, StringLength(200)] string Title, [Required] string Description,
     int CategoryId, TicketPriority Priority = TicketPriority.Medium);
 public record AssignDto(int StaffId, DateTime? DueDate);
