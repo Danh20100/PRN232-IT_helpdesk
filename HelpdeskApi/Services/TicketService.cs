@@ -31,10 +31,15 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
         if (status.HasValue) q = q.Where(t => t.Status == status);
         if (categoryId.HasValue) q = q.Where(t => t.CategoryId == categoryId);
         if (priorityFilter.HasValue) q = q.Where(t => t.Priority == priorityFilter);
+        var queue = string.Equals(sort, "queue", StringComparison.OrdinalIgnoreCase);
+        if (queue && !status.HasValue) q = q.Where(t => t.Status != TicketStatus.Resolved);
         q = sort?.ToLower() switch
         {
             "priority" => q.OrderByDescending(t => t.Priority),
             "status" => q.OrderBy(t => t.Status),
+            "queue" => q.OrderBy(t => t.Status == TicketStatus.Closed ? 2 : t.Status == TicketStatus.Cancelled ? 1 : 0)
+                .ThenByDescending(t => t.Priority)
+                .ThenByDescending(t => t.CreatedAt),
             _ => q.OrderByDescending(t => t.CreatedAt)
         };
         var total = await q.CountAsync();
@@ -117,7 +122,8 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
         var t = await GetAccessibleAsync(id, userId, role);
         var rule = Rules.FirstOrDefault(r => r.From == t.Status && r.To == to);
         if (rule == default) throw new AppException(400, $"Không thể chuyển từ {t.Status} sang {to}");
-        if (rule.ByCreator && t.CreatedById != userId)
+        var adminClose = role == Role.Admin && t.Status == TicketStatus.Resolved && to == TicketStatus.Closed;
+        if (rule.ByCreator && t.CreatedById != userId && !adminClose)
             throw new AppException(403, "Chỉ người tạo ticket được thực hiện thao tác này");
         if (!rule.ByCreator && t.AssignedToId != userId)
             throw new AppException(403, "Chỉ Staff được phân công mới được thực hiện thao tác này");
