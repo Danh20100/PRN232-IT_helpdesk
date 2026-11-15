@@ -258,16 +258,29 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
             .Select(x => new FeedbackDto(x.Rating, x.Comment, x.CreatedAt)).FirstOrDefaultAsync();
     }
 
-    public async Task<Dictionary<string, object?>> DashboardAsync(int userId, Role role)
+    public async Task<Dictionary<string, object?>> DashboardAsync(int userId, Role role, DateTime? from, DateTime? to)
     {
         var q = Scope(userId, role);
+        if (from.HasValue) q = q.Where(t => t.CreatedAt >= from.Value);
+        if (to.HasValue) q = q.Where(t => t.CreatedAt <= to.Value);
         var now = DateTime.UtcNow;
         var byStatus = (await q.GroupBy(t => t.Status).Select(g => new { g.Key, Count = g.Count() }).ToListAsync())
             .ToDictionary(x => x.Key.ToString(), x => x.Count);
+        var byPriority = (await q.GroupBy(t => t.Priority).Select(g => new { g.Key, Count = g.Count() }).ToListAsync())
+            .ToDictionary(x => x.Key.ToString(), x => x.Count);
+        // ponytail: bucket by Vietnam local day (UTC+7)
+        var created = await q.Select(t => t.CreatedAt).ToListAsync();
+        var series = created
+            .GroupBy(d => d.AddHours(7).Date)
+            .OrderBy(g => g.Key)
+            .Select(g => new { Date = g.Key.ToString("yyyy-MM-dd"), Count = g.Count() })
+            .ToList();
         var result = new Dictionary<string, object?>
         {
             ["total"] = await q.CountAsync(),
             ["byStatus"] = byStatus,
+            ["byPriority"] = byPriority,
+            ["series"] = series,
             ["overdue"] = await q.CountAsync(t => t.DueDate != null && t.DueDate < now
                 && t.Status != TicketStatus.Resolved && t.Status != TicketStatus.Closed && t.Status != TicketStatus.Cancelled)
         };
@@ -282,7 +295,10 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
                     Total = g.Count(),
                     Done = g.Count(t => t.Status == TicketStatus.Resolved || t.Status == TicketStatus.Closed)
                 }).ToListAsync();
-            result["averageRating"] = await repo.Feedbacks.AverageAsync(f => (double?)f.Rating);
+            var feedback = repo.Feedbacks.AsQueryable();
+            if (from.HasValue) feedback = feedback.Where(f => f.CreatedAt >= from.Value);
+            if (to.HasValue) feedback = feedback.Where(f => f.CreatedAt <= to.Value);
+            result["averageRating"] = await feedback.AverageAsync(f => (double?)f.Rating);
         }
         return result;
     }
