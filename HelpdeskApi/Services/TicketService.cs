@@ -99,12 +99,22 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
         await transaction.CommitAsync();
         log.LogInformation("Created {Code} priority {Priority}", t.Code, t.Priority);
 
+        // User tạo Ticket mới → thông báo Admin
+        var creatorName = await repo.Users.Where(u => u.Id == userId).Select(u => u.FullName).FirstOrDefaultAsync();
+        var adminIds = await GetActiveAdminIdsAsync();
+        await NotifyAsync(new TicketStatusEvent(
+            t.Id, t.Code, t.Status.ToString(), t.CreatedById, t.AssignedToId,
+            ActorId: userId, TicketTitle: t.Title, EventType: "Created",
+            ActorName: creatorName, AdminIds: adminIds));
+
+        // Nếu tạo kèm phân công Staff → thông báo Staff được giao
         if (dto.StaffId is int assignedStaffId)
         {
             var staffName = await repo.Users.Where(u => u.Id == assignedStaffId).Select(u => u.FullName).FirstOrDefaultAsync();
             await NotifyAsync(new TicketStatusEvent(
                 t.Id, t.Code, t.Status.ToString(), t.CreatedById, t.AssignedToId,
-                ActorId: userId, TicketTitle: t.Title, EventType: "Assigned", ActorName: staffName));
+                ActorId: userId, TicketTitle: t.Title, EventType: "Assigned",
+                ActorName: staffName, OldAssignedToId: null));
         }
 
         return await repo.Tickets.Where(x => x.Id == t.Id).Select(TicketDto.Projection).FirstAsync();
@@ -153,10 +163,15 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
         if (to == TicketStatus.InProgress) t.ResolvedAt = null;
         await repo.SaveAsync();
         log.LogInformation("Ticket {Code} status {Status}", t.Code, to);
+
+        var needAdmins = (oldStatus == TicketStatus.Resolved && to == TicketStatus.InProgress)
+                         || to == TicketStatus.Cancelled;
+        var adminIds = needAdmins ? await GetActiveAdminIdsAsync() : null;
+
         await NotifyAsync(new TicketStatusEvent(
             t.Id, t.Code, to.ToString(), t.CreatedById, t.AssignedToId,
             ActorId: userId, OldStatus: oldStatus.ToString(), TicketTitle: t.Title,
-            Note: cleanNote, EventType: "StatusChanged"));
+            Note: cleanNote, EventType: "StatusChanged", AdminIds: adminIds));
         return await repo.Tickets.Where(x => x.Id == id).Select(TicketDto.Projection).FirstAsync();
     }
 
@@ -166,6 +181,9 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
             throw new AppException(400, "Người nhận phải là Staff đang hoạt động");
     }
 
+    private Task<List<int>> GetActiveAdminIdsAsync() =>
+        repo.Users.Where(u => u.Role == Role.Admin && u.IsActive).Select(u => u.Id).ToListAsync();
+
     public async Task<TicketDto> AssignAsync(int id, int adminId, int staffId, DateTime? dueDate)
     {
         var t = await repo.Tickets.FirstOrDefaultAsync(x => x.Id == id) ?? throw new AppException(404, "Ticket không tồn tại");
@@ -174,19 +192,22 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
         await EnsureActiveStaffAsync(staffId);
         if (t.AssignedToId == staffId)
             throw new AppException(400, "Ticket đã được giao cho nhân viên này");
+        var oldAssigneeId = t.AssignedToId;
         repo.Add(new TicketAssignmentHistory
         {
             TicketId = t.Id, AssignedById = adminId,
-            OldAssigneeId = t.AssignedToId, NewAssigneeId = staffId
+            OldAssigneeId = oldAssigneeId, NewAssigneeId = staffId
         });
         t.AssignedToId = staffId;
         if (dueDate.HasValue) t.DueDate = dueDate;
         t.UpdatedAt = DateTime.UtcNow;
         await repo.SaveAsync();
         var staffName = await repo.Users.Where(u => u.Id == staffId).Select(u => u.FullName).FirstOrDefaultAsync();
+        var eventType = oldAssigneeId.HasValue ? "Reassigned" : "Assigned";
         await NotifyAsync(new TicketStatusEvent(
             t.Id, t.Code, t.Status.ToString(), t.CreatedById, t.AssignedToId,
-            ActorId: adminId, TicketTitle: t.Title, EventType: "Assigned", ActorName: staffName));
+            ActorId: adminId, TicketTitle: t.Title, EventType: eventType,
+            ActorName: staffName, OldAssignedToId: oldAssigneeId));
         return await repo.Tickets.Where(x => x.Id == id).Select(TicketDto.Projection).FirstAsync();
     }
 
@@ -346,8 +367,128 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
         }
     }
 
+    private async Task EnsureOverdueNotificationsAsync()
+    {
+        try
+        {
+            var now = DateTime.UtcNow;
+            var overdueTickets = await repo.Tickets
+                .Where(t => t.DueDate != null && t.DueDate < now
+                    && t.Status != TicketStatus.Resolved
+                    && t.Status != TicketStatus.Closed
+                    && t.Status != TicketStatus.Cancelled)
+                .Select(t => new { t.Id, t.Code, t.Title, t.CreatedById, t.AssignedToId, t.DueDate })
+                .ToListAsync();
+
+            if (overdueTickets.Count == 0) return;
+
+            var adminIds = await GetActiveAdminIdsAsync();
+            var added = false;
+
+            foreach (var t in overdueTickets)
+            {
+                var dueStr = t.DueDate!.Value.ToString("dd/MM/yyyy HH:mm 'UTC'");
+                var e = new TicketStatusEvent(
+                    t.Id, t.Code, "Overdue", t.CreatedById, t.AssignedToId,
+                    TicketTitle: t.Title, Note: dueStr, EventType: "Overdue", AdminIds: adminIds);
+
+                var items = TicketPublisher.BuildNotifications(e);
+                foreach (var (recipientId, title, message) in items)
+                {
+                    var alreadyNotified = await repo.Notifications.AnyAsync(n =>
+                        n.UserId == recipientId &&
+                        n.TicketId == t.Id &&
+                        n.Title == title);
+                    if (alreadyNotified) continue;
+
+                    repo.Add(new Notification
+                    {
+                        UserId = recipientId,
+                        TicketId = t.Id,
+                        Title = title,
+                        Message = message,
+                        IsRead = false,
+                        CreatedAt = now
+                    });
+                    added = true;
+                }
+            }
+
+            if (added) await repo.SaveAsync();
+        }
+        catch (Exception ex)
+        {
+            log.LogError(ex, "Overdue notification check failed");
+        }
+    }
+
+    private async Task EnsureRecentTicketCreatedNotificationsAsync()
+    {
+        try
+        {
+            var cutoff = DateTime.UtcNow.AddHours(-24);
+            var recentTickets = await repo.Tickets
+                .Where(t => t.CreatedAt >= cutoff && t.Status == TicketStatus.Open)
+                .Select(t => new
+                {
+                    t.Id,
+                    t.Code,
+                    t.Title,
+                    t.CreatedById,
+                    t.AssignedToId,
+                    t.CreatedAt,
+                    CreatorName = t.CreatedBy != null ? t.CreatedBy.FullName : "Người dùng"
+                })
+                .ToListAsync();
+
+            if (recentTickets.Count == 0) return;
+
+            var adminIds = await GetActiveAdminIdsAsync();
+            if (adminIds.Count == 0) return;
+
+            var added = false;
+            foreach (var t in recentTickets)
+            {
+                var e = new TicketStatusEvent(
+                    t.Id, t.Code, nameof(TicketStatus.Open), t.CreatedById, t.AssignedToId,
+                    ActorId: t.CreatedById, TicketTitle: t.Title, EventType: "Created",
+                    ActorName: t.CreatorName, AdminIds: adminIds);
+
+                var items = TicketPublisher.BuildNotifications(e);
+                foreach (var (recipientId, title, message) in items)
+                {
+                    var alreadyNotified = await repo.Notifications.AnyAsync(n =>
+                        n.UserId == recipientId &&
+                        n.TicketId == t.Id &&
+                        n.Title == title);
+                    if (alreadyNotified) continue;
+
+                    repo.Add(new Notification
+                    {
+                        UserId = recipientId,
+                        TicketId = t.Id,
+                        Title = title,
+                        Message = message,
+                        IsRead = false,
+                        CreatedAt = t.CreatedAt
+                    });
+                    added = true;
+                }
+            }
+
+            if (added) await repo.SaveAsync();
+        }
+        catch (Exception ex)
+        {
+            log.LogError(ex, "Recent ticket created notification backfill failed");
+        }
+    }
+
     public async Task<NotificationListDto> NotificationsAsync(int userId, int take = 30)
     {
+        await EnsureRecentTicketCreatedNotificationsAsync();
+        await EnsureOverdueNotificationsAsync();
+
         take = Math.Clamp(take, 1, 100);
         var q = repo.Notifications.Where(n => n.UserId == userId);
         var unreadCount = await q.CountAsync(n => !n.IsRead);
