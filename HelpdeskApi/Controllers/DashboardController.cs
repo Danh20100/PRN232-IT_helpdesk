@@ -4,6 +4,6 @@ namespace HelpdeskApi.Controllers;
 public class DashboardController(TicketService svc) : ControllerBase
 {
     [HttpGet]
-    public async Task<IActionResult> Get([FromQuery] DateTime? from, [FromQuery] DateTime? to)
+    public async Task<IActionResult> Get([FromQuery] DateOnly? from, [FromQuery] DateOnly? to)
         => Ok(await svc.DashboardAsync(User.GetId(), User.GetRole(), from, to));
 }

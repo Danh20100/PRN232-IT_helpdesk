@@ -40,7 +40,9 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
             "queue" => q.OrderBy(t => t.Status == TicketStatus.Closed ? 2 : t.Status == TicketStatus.Cancelled ? 1 : 0)
                 .ThenByDescending(t => t.Priority)
                 .ThenByDescending(t => t.CreatedAt),
-            _ => q.OrderByDescending(t => t.CreatedAt)
+            _ => q.OrderBy(t => t.Status == TicketStatus.Closed || t.Status == TicketStatus.Cancelled ? 1 : 0)
+                .ThenByDescending(t => t.Priority)
+                .ThenByDescending(t => t.CreatedAt)
         };
         var total = await q.CountAsync();
         var items = await q.Skip((page - 1) * pageSize).Take(pageSize).Select(TicketDto.Projection).ToListAsync();
@@ -279,11 +281,15 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
             .Select(x => new FeedbackDto(x.Rating, x.Comment, x.CreatedAt)).FirstOrDefaultAsync();
     }
 
-    public async Task<Dictionary<string, object?>> DashboardAsync(int userId, Role role, DateTime? from, DateTime? to)
+    public async Task<Dictionary<string, object?>> DashboardAsync(int userId, Role role, DateOnly? from, DateOnly? to)
     {
+        if (from.HasValue && to.HasValue && from > to) (from, to) = (to, from);
+        // Ngày lịch Việt Nam: 00:00 UTC+7 đến trước 00:00 ngày hôm sau.
+        DateTime? start = from?.ToDateTime(TimeOnly.MinValue).AddHours(-7);
+        DateTime? end = to?.AddDays(1).ToDateTime(TimeOnly.MinValue).AddHours(-7);
         var q = Scope(userId, role);
-        if (from.HasValue) q = q.Where(t => t.CreatedAt >= from.Value);
-        if (to.HasValue) q = q.Where(t => t.CreatedAt <= to.Value);
+        if (start.HasValue) q = q.Where(t => t.CreatedAt >= start.Value);
+        if (end.HasValue) q = q.Where(t => t.CreatedAt < end.Value);
         var now = DateTime.UtcNow;
         var byStatus = (await q.GroupBy(t => t.Status).Select(g => new { g.Key, Count = g.Count() }).ToListAsync())
             .ToDictionary(x => x.Key.ToString(), x => x.Count);
@@ -317,8 +323,8 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
                     Done = g.Count(t => t.Status == TicketStatus.Resolved || t.Status == TicketStatus.Closed)
                 }).ToListAsync();
             var feedback = repo.Feedbacks.AsQueryable();
-            if (from.HasValue) feedback = feedback.Where(f => f.CreatedAt >= from.Value);
-            if (to.HasValue) feedback = feedback.Where(f => f.CreatedAt <= to.Value);
+            if (start.HasValue) feedback = feedback.Where(f => f.CreatedAt >= start.Value);
+            if (end.HasValue) feedback = feedback.Where(f => f.CreatedAt < end.Value);
             result["averageRating"] = await feedback.AverageAsync(f => (double?)f.Rating);
         }
         return result;
