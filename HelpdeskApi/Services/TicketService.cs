@@ -378,45 +378,73 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
         try
         {
             var now = DateTime.UtcNow;
-            var overdueTickets = await repo.Tickets
-                .Where(t => t.DueDate != null && t.DueDate < now
-                    && t.Status != TicketStatus.Resolved
-                    && t.Status != TicketStatus.Closed
-                    && t.Status != TicketStatus.Cancelled)
-                .Select(t => new { t.Id, t.Code, t.Title, t.CreatedById, t.AssignedToId, t.DueDate })
+            var activeTickets = await repo.Tickets
+                .Where(t => t.Status == TicketStatus.Open
+                    || t.Status == TicketStatus.InProgress
+                    || t.Status == TicketStatus.Pending)
+                .Select(t => new { t.Id, t.Code, t.Title, t.CreatedById, t.AssignedToId, t.CreatedAt })
                 .ToListAsync();
 
-            if (overdueTickets.Count == 0) return;
+            if (activeTickets.Count == 0) return;
+
+            var ticketIds = activeTickets.Select(t => t.Id).ToList();
+            var reopenMap = await repo.StatusHistories
+                .Where(h => ticketIds.Contains(h.TicketId)
+                    && h.OldStatus == TicketStatus.Resolved
+                    && h.NewStatus == TicketStatus.InProgress)
+                .GroupBy(h => h.TicketId)
+                .Select(g => new { TicketId = g.Key, LastReopenedAt = g.Max(x => x.ChangedAt) })
+                .ToDictionaryAsync(x => x.TicketId, x => x.LastReopenedAt);
 
             var adminIds = await GetActiveAdminIdsAsync();
             var added = false;
 
-            foreach (var t in overdueTickets)
+            foreach (var t in activeTickets)
             {
-                var dueStr = t.DueDate!.Value.ToString("dd/MM/yyyy HH:mm 'UTC'");
-                var e = new TicketStatusEvent(
-                    t.Id, t.Code, "Overdue", t.CreatedById, t.AssignedToId,
-                    TicketTitle: t.Title, Note: dueStr, EventType: "Overdue", AdminIds: adminIds);
+                var slaStartAt = reopenMap.TryGetValue(t.Id, out var reopenedAt) && reopenedAt > t.CreatedAt
+                    ? reopenedAt
+                    : t.CreatedAt;
 
-                var items = TicketPublisher.BuildNotifications(e);
-                foreach (var (recipientId, title, message) in items)
+                var elapsedHours = (now - slaStartAt).TotalHours;
+                if (elapsedHours < 20.0) continue;
+
+                // 1. Mốc 20h Warning (gửi bù cả khi Worker bị dừng qua mốc 24h)
+                if (elapsedHours >= 20.0 && t.AssignedToId is int staffId)
                 {
-                    var alreadyNotified = await repo.Notifications.AnyAsync(n =>
-                        n.UserId == recipientId &&
-                        n.TicketId == t.Id &&
-                        n.Title == title);
-                    if (alreadyNotified) continue;
+                    const string warnTitle = "Ticket sắp quá hạn SLA";
+                    var warnMsg = $"Ticket {t.Code} đã được xử lý trong 20 giờ và chỉ còn 4 giờ trước khi vượt quá SLA 24 giờ.";
+                    if (await TryInsertSlaNotificationAsync(staffId, t.Id, warnTitle, warnMsg, slaStartAt, now))
+                        added = true;
+                }
 
-                    repo.Add(new Notification
+                // 2. Mốc 24h Overdue
+                if (elapsedHours >= 24.0)
+                {
+                    const string overdueTitle = "Ticket đã quá hạn SLA";
+                    var overdueMsg = $"Ticket {t.Code} đã vượt quá thời gian xử lý 24 giờ. Vui lòng kiểm tra và cập nhật tiến độ xử lý.";
+                    var recipients = new List<int>(adminIds);
+                    if (t.AssignedToId is int sId && !recipients.Contains(sId)) recipients.Add(sId);
+
+                    foreach (var uid in recipients.Distinct())
                     {
-                        UserId = recipientId,
-                        TicketId = t.Id,
-                        Title = title,
-                        Message = message,
-                        IsRead = false,
-                        CreatedAt = now
-                    });
-                    added = true;
+                        if (await TryInsertSlaNotificationAsync(uid, t.Id, overdueTitle, overdueMsg, slaStartAt, now))
+                            added = true;
+                    }
+                }
+
+                // 3. Mốc 48h Overdue Reminder
+                if (elapsedHours >= 48.0)
+                {
+                    const string reminderTitle = "Cảnh báo nhắc lại: Ticket quá hạn SLA 48 giờ";
+                    var reminderMsg = $"Ticket {t.Code} đã vượt quá 48 giờ xử lý mà chưa được giải quyết. Vui lòng kiểm tra và cập nhật tiến độ xử lý.";
+                    var recipients = new List<int>(adminIds);
+                    if (t.AssignedToId is int sId && !recipients.Contains(sId)) recipients.Add(sId);
+
+                    foreach (var uid in recipients.Distinct())
+                    {
+                        if (await TryInsertSlaNotificationAsync(uid, t.Id, reminderTitle, reminderMsg, slaStartAt, now))
+                            added = true;
+                    }
                 }
             }
 
@@ -424,8 +452,309 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
         }
         catch (Exception ex)
         {
-            log.LogError(ex, "Overdue notification check failed");
+            log.LogError(ex, "SLA notification check failed");
         }
+    }
+
+    private async Task<bool> TryInsertSlaNotificationAsync(
+        int userId, int ticketId, string title, string message, DateTime slaStartAt, DateTime now)
+    {
+        var exists = await repo.Notifications.AnyAsync(n =>
+            n.UserId == userId &&
+            n.TicketId == ticketId &&
+            n.Title == title &&
+            n.CreatedAt >= slaStartAt);
+        if (exists) return false;
+
+        repo.Add(new Notification
+        {
+            UserId = userId,
+            TicketId = ticketId,
+            Title = title,
+            Message = message,
+            IsRead = false,
+            CreatedAt = now
+        });
+        return true;
+    }
+
+    // ---- SLA Monitoring & Time Tracking Dashboard ----
+    private static SlaTicketItemDto ComputeSlaItem(
+        TicketDto t,
+        DateTime? lastReopenedAt,
+        DateTime? lastResolvedAtFromHistory,
+        DateTime nowUtc)
+    {
+        var isReopened = lastReopenedAt.HasValue && lastReopenedAt.Value > t.CreatedAt;
+        var slaStartAt = isReopened ? lastReopenedAt!.Value : t.CreatedAt;
+        var slaDeadline = slaStartAt.AddHours(24);
+        var isCompleted = t.Status is TicketStatus.Resolved or TicketStatus.Closed or TicketStatus.Cancelled;
+
+        DateTime endTime;
+        if (isCompleted)
+        {
+            // Lấy đúng thời điểm kết thúc của chu kỳ hiện tại (>= slaStartAt), không cộng dồn chu kỳ trước
+            DateTime? candidate = t.ResolvedAt ?? lastResolvedAtFromHistory ?? t.ClosedAt;
+            if (candidate.HasValue && candidate.Value >= slaStartAt)
+                endTime = candidate.Value;
+            else if (t.ClosedAt.HasValue && t.ClosedAt.Value >= slaStartAt)
+                endTime = t.ClosedAt.Value;
+            else
+                endTime = candidate ?? nowUtc;
+        }
+        else
+        {
+            endTime = nowUtc;
+        }
+
+        var elapsed = endTime > slaStartAt ? endTime - slaStartAt : TimeSpan.Zero;
+        var elapsedHours = Math.Round(elapsed.TotalHours, 2);
+        var elapsedMinutes = Math.Max(0, (int)Math.Floor(elapsed.TotalMinutes));
+
+        int remainingMinutes;
+        if (isCompleted)
+        {
+            remainingMinutes = (int)Math.Round((slaDeadline - endTime).TotalMinutes);
+        }
+        else
+        {
+            remainingMinutes = (int)Math.Ceiling((slaDeadline - nowUtc).TotalMinutes);
+        }
+
+        string slaStatus;
+        if (isCompleted)
+        {
+            slaStatus = "COMPLETED";
+        }
+        else if (elapsed.TotalHours >= 24.0)
+        {
+            slaStatus = "OVERDUE";
+        }
+        else if (elapsed.TotalHours >= 20.0)
+        {
+            slaStatus = "WARNING";
+        }
+        else
+        {
+            slaStatus = "NORMAL";
+        }
+
+        var progressPercent = Math.Round(Math.Clamp((elapsed.TotalHours / 24.0) * 100.0, 0.0, 100.0), 1);
+
+        return new SlaTicketItemDto(
+            t.Id,
+            t.Code,
+            t.Title,
+            t.Category,
+            t.Priority,
+            t.Status,
+            t.CreatedById,
+            t.CreatedBy,
+            t.AssignedToId,
+            t.AssignedTo,
+            t.CreatedAt,
+            slaStartAt,
+            slaDeadline,
+            t.DueDate,
+            t.ResolvedAt ?? lastResolvedAtFromHistory,
+            elapsedHours,
+            elapsedMinutes,
+            remainingMinutes,
+            progressPercent,
+            slaStatus,
+            isReopened);
+    }
+
+    private async Task<List<SlaTicketItemDto>> LoadScopedSlaItemsAsync(
+        int userId, Role role, DateTime? start = null, DateTime? end = null)
+    {
+        var q = Scope(userId, role);
+        if (start.HasValue) q = q.Where(t => t.CreatedAt >= start.Value);
+        if (end.HasValue) q = q.Where(t => t.CreatedAt < end.Value);
+
+        var tickets = await q.Select(TicketDto.Projection).ToListAsync();
+        if (tickets.Count == 0) return [];
+
+        var ids = tickets.Select(t => t.Id).ToList();
+        var histories = await repo.StatusHistories
+            .Where(h => ids.Contains(h.TicketId) &&
+                ((h.OldStatus == TicketStatus.Resolved && h.NewStatus == TicketStatus.InProgress) ||
+                 h.NewStatus == TicketStatus.Resolved))
+            .Select(h => new { h.TicketId, h.OldStatus, h.NewStatus, h.ChangedAt })
+            .ToListAsync();
+
+        var reopenMap = histories
+            .Where(h => h.OldStatus == TicketStatus.Resolved && h.NewStatus == TicketStatus.InProgress)
+            .GroupBy(h => h.TicketId)
+            .ToDictionary(g => g.Key, g => (DateTime?)g.Max(x => x.ChangedAt));
+
+        var resolvedMap = histories
+            .Where(h => h.NewStatus == TicketStatus.Resolved)
+            .GroupBy(h => h.TicketId)
+            .ToDictionary(g => g.Key, g => (DateTime?)g.Max(x => x.ChangedAt));
+
+        var now = DateTime.UtcNow;
+        return tickets
+            .Select(t => ComputeSlaItem(
+                t,
+                reopenMap.GetValueOrDefault(t.Id),
+                resolvedMap.GetValueOrDefault(t.Id),
+                now))
+            .ToList();
+    }
+
+    public async Task<SlaOverviewDto> GetSlaOverviewAsync(int userId, Role role, DateOnly? from, DateOnly? to)
+    {
+        if (from.HasValue && to.HasValue && from > to) (from, to) = (to, from);
+        DateTime? start = from?.ToDateTime(TimeOnly.MinValue).AddHours(-7);
+        DateTime? end = to?.AddDays(1).ToDateTime(TimeOnly.MinValue).AddHours(-7);
+
+        var items = await LoadScopedSlaItemsAsync(userId, role, start, end);
+
+        var onTrack = items.Count(x => x.SlaStatus == "NORMAL");
+        var nearDeadline = items.Count(x => x.SlaStatus == "WARNING");
+        var overdue = items.Count(x => x.SlaStatus == "OVERDUE");
+        var completed = items.Count(x => x.SlaStatus == "COMPLETED");
+        var totalActive = onTrack + nearDeadline + overdue;
+
+        // AverageResolutionHours: chỉ tính trên các ticket đã hoàn thành xử lý (Resolved hoặc Closed) trong chu kỳ hiện tại
+        var resolvedItems = items
+            .Where(x => (x.Status == TicketStatus.Resolved || x.Status == TicketStatus.Closed) && x.ResolvedAt.HasValue && x.ResolvedAt.Value >= x.SlaStartAt)
+            .ToList();
+        var avgHours = resolvedItems.Count > 0
+            ? Math.Round(resolvedItems.Average(x => (x.ResolvedAt!.Value - x.SlaStartAt).TotalHours), 2)
+            : 0.0;
+
+        var bySlaStatus = new List<SlaStatusCountDto>
+        {
+            new("NORMAL", onTrack),
+            new("WARNING", nearDeadline),
+            new("OVERDUE", overdue),
+            new("COMPLETED", completed)
+        };
+
+        var completedTrend = items
+            .Where(x => x.SlaStatus == "COMPLETED")
+            .Select(x => (x.ResolvedAt ?? x.CreatedAt).AddHours(7).Date)
+            .GroupBy(d => d)
+            .OrderBy(g => g.Key)
+            .Select(g => new SlaTrendPointDto(g.Key.ToString("yyyy-MM-dd"), g.Count()))
+            .ToList();
+
+        return new SlaOverviewDto(
+            totalActive,
+            onTrack,
+            nearDeadline,
+            overdue,
+            completed,
+            avgHours,
+            bySlaStatus,
+            completedTrend);
+    }
+
+    public async Task<PagedResult<SlaTicketItemDto>> GetSlaTicketsAsync(
+        int userId,
+        Role role,
+        string? search,
+        TicketPriority? priorityFilter,
+        TicketStatus? statusFilter,
+        int? staffId,
+        string? slaStatus,
+        string? sort,
+        int page,
+        int pageSize)
+    {
+        page = Math.Max(page, 1);
+        pageSize = Math.Clamp(pageSize, 1, 50);
+
+        var items = await LoadScopedSlaItemsAsync(userId, role);
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var kw = search.Trim();
+            items = items.Where(x =>
+                x.Code.Contains(kw, StringComparison.OrdinalIgnoreCase) ||
+                x.Title.Contains(kw, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+        if (priorityFilter.HasValue)
+            items = items.Where(x => x.Priority == priorityFilter.Value).ToList();
+        if (statusFilter.HasValue)
+            items = items.Where(x => x.Status == statusFilter.Value).ToList();
+        if (role == Role.Admin && staffId.HasValue)
+            items = items.Where(x => x.AssignedToId == staffId.Value).ToList();
+        if (!string.IsNullOrWhiteSpace(slaStatus))
+            items = items.Where(x => string.Equals(x.SlaStatus, slaStatus.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+
+        items = (sort?.ToLowerInvariant()) switch
+        {
+            "overdue_desc" => items
+                .OrderBy(x => x.SlaStatus == "OVERDUE" ? 0 : x.SlaStatus == "WARNING" ? 1 : x.SlaStatus == "NORMAL" ? 2 : 3)
+                .ThenBy(x => x.RemainingMinutes)
+                .ThenByDescending(x => x.ElapsedMinutes)
+                .ToList(),
+            "remaining_asc" => items
+                .OrderBy(x => x.SlaStatus == "COMPLETED" ? 1 : 0)
+                .ThenBy(x => x.RemainingMinutes)
+                .ToList(),
+            "elapsed_desc" => items
+                .OrderByDescending(x => x.ElapsedMinutes)
+                .ToList(),
+            "created_desc" => items
+                .OrderByDescending(x => x.CreatedAt)
+                .ToList(),
+            _ => items
+                .OrderBy(x => x.SlaStatus == "OVERDUE" ? 0 : x.SlaStatus == "WARNING" ? 1 : x.SlaStatus == "NORMAL" ? 2 : 3)
+                .ThenBy(x => x.RemainingMinutes)
+                .ThenByDescending(x => x.Priority)
+                .ToList()
+        };
+
+        var total = items.Count;
+        var paged = items.Skip((page - 1) * pageSize).Take(pageSize).ToList();
+        return new PagedResult<SlaTicketItemDto>(page, pageSize, total, paged);
+    }
+
+    public async Task<List<StaffSlaPerformanceDto>> GetStaffPerformanceAsync(int userId, Role role)
+    {
+        var staffQuery = repo.Users.Where(u => u.Role == Role.Staff && u.IsActive);
+        if (role == Role.Staff)
+            staffQuery = staffQuery.Where(u => u.Id == userId);
+
+        var staffList = await staffQuery
+            .OrderBy(u => u.FullName)
+            .Select(u => new { u.Id, u.FullName, u.Email })
+            .ToListAsync();
+
+        var items = await LoadScopedSlaItemsAsync(userId, role);
+
+        return staffList.Select(s =>
+        {
+            var mine = items.Where(t => t.AssignedToId == s.Id).ToList();
+            var onTrack = mine.Count(t => t.SlaStatus == "NORMAL");
+            var warning = mine.Count(t => t.SlaStatus == "WARNING");
+            var overdue = mine.Count(t => t.SlaStatus == "OVERDUE");
+            var completed = mine.Count(t => t.SlaStatus == "COMPLETED");
+            var active = onTrack + warning + overdue;
+
+            var resolvedMine = mine
+                .Where(t => (t.Status == TicketStatus.Resolved || t.Status == TicketStatus.Closed)
+                            && t.ResolvedAt.HasValue && t.ResolvedAt.Value >= t.SlaStartAt)
+                .ToList();
+            var avgHours = resolvedMine.Count > 0
+                ? Math.Round(resolvedMine.Average(t => (t.ResolvedAt!.Value - t.SlaStartAt).TotalHours), 2)
+                : 0.0;
+
+            return new StaffSlaPerformanceDto(
+                s.Id,
+                s.FullName,
+                s.Email,
+                active,
+                onTrack,
+                warning,
+                overdue,
+                completed,
+                avgHours);
+        }).ToList();
     }
 
     private async Task EnsureRecentTicketCreatedNotificationsAsync()

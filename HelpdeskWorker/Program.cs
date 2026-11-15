@@ -8,4 +8,5 @@ builder.Services.AddDbContext<WorkerDb>(o =>
 builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
     ConnectionMultiplexer.Connect(builder.Configuration["Redis"] ?? "localhost:6379,abortConnect=false"));
 builder.Services.AddHostedService<NotificationWorker>();
+builder.Services.AddHostedService<SlaMonitoringWorker>();
 builder.Build().Run();

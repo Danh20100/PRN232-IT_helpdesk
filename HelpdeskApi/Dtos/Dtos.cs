@@ -52,3 +52,50 @@ public record FeedbackDto(int Rating, string? Comment, DateTime CreatedAt);
 // ---- Notification ----
 public record NotificationDto(int Id, int? TicketId, string Title, string Message, bool IsRead, DateTime CreatedAt);
 public record NotificationListDto(int UnreadCount, List<NotificationDto> Items);
+
+// ---- SLA Monitoring Dashboard ----
+public record SlaStatusCountDto(string SlaStatus, int Count);
+public record SlaTrendPointDto(string Date, int Count);
+public record SlaOverviewDto(
+    int TotalActive,
+    int OnTrack,
+    int NearDeadline,
+    int Overdue,
+    int Completed,
+    double AverageResolutionHours,
+    List<SlaStatusCountDto> BySlaStatus,
+    List<SlaTrendPointDto> CompletedTrend);
+
+public record SlaTicketItemDto(
+    int Id,
+    string Code,
+    string Title,
+    string Category,
+    TicketPriority Priority,
+    TicketStatus Status,
+    int CreatedById,
+    string CreatedBy,
+    int? AssignedToId,
+    string? AssignedTo,
+    DateTime CreatedAt,
+    DateTime SlaStartAt,
+    DateTime SlaDeadline,
+    DateTime? DueDate,
+    DateTime? ResolvedAt,
+    double ElapsedHours,
+    int ElapsedMinutes,
+    int RemainingMinutes,
+    double ProgressPercent,
+    string SlaStatus,
+    bool IsReopened);
+
+public record StaffSlaPerformanceDto(
+    int StaffId,
+    string StaffName,
+    string Email,
+    int ActiveCount,
+    int OnTrackCount,
+    int WarningCount,
+    int OverdueCount,
+    int CompletedCount,
+    double AverageResolutionHours);
