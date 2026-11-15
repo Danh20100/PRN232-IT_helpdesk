@@ -93,6 +93,15 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
         await repo.SaveAsync();
         await transaction.CommitAsync();
         log.LogInformation("Created {Code} priority {Priority}", t.Code, t.Priority);
+
+        if (dto.StaffId is int assignedStaffId)
+        {
+            var staffName = await repo.Users.Where(u => u.Id == assignedStaffId).Select(u => u.FullName).FirstOrDefaultAsync();
+            await NotifyAsync(new TicketStatusEvent(
+                t.Id, t.Code, t.Status.ToString(), t.CreatedById, t.AssignedToId,
+                ActorId: userId, TicketTitle: t.Title, EventType: "Assigned", ActorName: staffName));
+        }
+
         return await repo.Tickets.Where(x => x.Id == t.Id).Select(TicketDto.Projection).FirstAsync();
     }
 
@@ -124,10 +133,12 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
         if (to == TicketStatus.Resolved && string.IsNullOrWhiteSpace(note))
             throw new AppException(400, "Cần nhập ghi chú xử lý khi chuyển sang Resolved");
 
+        var oldStatus = t.Status;
+        var cleanNote = note?.Trim();
         repo.Add(new TicketStatusHistory
         {
             TicketId = t.Id, ChangedById = userId,
-            OldStatus = t.Status, NewStatus = to, Note = note?.Trim()
+            OldStatus = oldStatus, NewStatus = to, Note = cleanNote
         });
         t.Status = to;
         t.UpdatedAt = DateTime.UtcNow;
@@ -136,7 +147,10 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
         if (to == TicketStatus.InProgress) t.ResolvedAt = null;
         await repo.SaveAsync();
         log.LogInformation("Ticket {Code} status {Status}", t.Code, to);
-        await bus.PublishStatusAsync(new TicketStatusEvent(t.Id, t.Code, to.ToString(), t.CreatedById, t.AssignedToId));
+        await NotifyAsync(new TicketStatusEvent(
+            t.Id, t.Code, to.ToString(), t.CreatedById, t.AssignedToId,
+            ActorId: userId, OldStatus: oldStatus.ToString(), TicketTitle: t.Title,
+            Note: cleanNote, EventType: "StatusChanged"));
         return await repo.Tickets.Where(x => x.Id == id).Select(TicketDto.Projection).FirstAsync();
     }
 
@@ -163,6 +177,10 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
         if (dueDate.HasValue) t.DueDate = dueDate;
         t.UpdatedAt = DateTime.UtcNow;
         await repo.SaveAsync();
+        var staffName = await repo.Users.Where(u => u.Id == staffId).Select(u => u.FullName).FirstOrDefaultAsync();
+        await NotifyAsync(new TicketStatusEvent(
+            t.Id, t.Code, t.Status.ToString(), t.CreatedById, t.AssignedToId,
+            ActorId: adminId, TicketTitle: t.Title, EventType: "Assigned", ActorName: staffName));
         return await repo.Tickets.Where(x => x.Id == id).Select(TicketDto.Projection).FirstAsync();
     }
 
@@ -209,6 +227,9 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
         repo.Add(c);
         await repo.SaveAsync();
         var name = await repo.Users.Where(u => u.Id == userId).Select(u => u.FullName).FirstAsync();
+        await NotifyAsync(new TicketStatusEvent(
+            t.Id, t.Code, t.Status.ToString(), t.CreatedById, t.AssignedToId,
+            ActorId: userId, TicketTitle: t.Title, Note: c.Content, EventType: "CommentAdded", ActorName: name));
         return new CommentDto(c.Id, c.UserId, name, c.Content, c.CreatedAt);
     }
 
@@ -258,5 +279,83 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
             result["averageRating"] = await repo.Feedbacks.AverageAsync(f => (double?)f.Rating);
         }
         return result;
+    }
+
+    // ---- Notifications ----
+    private async Task NotifyAsync(TicketStatusEvent e)
+    {
+        var handledByWorker = await bus.PublishStatusAsync(e);
+        if (handledByWorker) return;
+
+        // Fallback an toàn khi chạy dev local không bật HelpdeskWorker hoặc Redis.
+        try
+        {
+            var items = TicketPublisher.BuildNotifications(e);
+            if (items.Count == 0) return;
+
+            var cutoff = DateTime.UtcNow.AddSeconds(-10);
+            var added = false;
+            foreach (var (recipientId, title, message) in items)
+            {
+                var exists = await repo.Notifications.AnyAsync(n =>
+                    n.UserId == recipientId &&
+                    n.TicketId == e.TicketId &&
+                    n.Title == title &&
+                    n.Message == message &&
+                    n.CreatedAt >= cutoff);
+                if (exists) continue;
+
+                repo.Add(new Notification
+                {
+                    UserId = recipientId,
+                    TicketId = e.TicketId,
+                    Title = title,
+                    Message = message,
+                    IsRead = false,
+                    CreatedAt = DateTime.UtcNow
+                });
+                added = true;
+            }
+            if (added) await repo.SaveAsync();
+        }
+        catch (Exception ex)
+        {
+            log.LogError(ex, "Fallback notification save failed for {Code}", e.Code);
+        }
+    }
+
+    public async Task<NotificationListDto> NotificationsAsync(int userId, int take = 30)
+    {
+        take = Math.Clamp(take, 1, 100);
+        var q = repo.Notifications.Where(n => n.UserId == userId);
+        var unreadCount = await q.CountAsync(n => !n.IsRead);
+        var items = await q
+            .OrderByDescending(n => n.CreatedAt)
+            .ThenByDescending(n => n.Id)
+            .Take(take)
+            .Select(n => new NotificationDto(n.Id, n.TicketId, n.Title, n.Message, n.IsRead, n.CreatedAt))
+            .ToListAsync();
+        return new NotificationListDto(unreadCount, items);
+    }
+
+    public async Task MarkNotificationReadAsync(int id, int userId)
+    {
+        var n = await repo.Notifications.FirstOrDefaultAsync(x => x.Id == id && x.UserId == userId)
+            ?? throw new AppException(404, "Thông báo không tồn tại");
+        if (!n.IsRead)
+        {
+            n.IsRead = true;
+            await repo.SaveAsync();
+        }
+    }
+
+    public async Task MarkAllNotificationsReadAsync(int userId)
+    {
+        var unread = await repo.Notifications
+            .Where(n => n.UserId == userId && !n.IsRead)
+            .ToListAsync();
+        if (unread.Count == 0) return;
+        foreach (var n in unread) n.IsRead = true;
+        await repo.SaveAsync();
     }
 }

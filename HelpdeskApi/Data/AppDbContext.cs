@@ -10,6 +10,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<TicketStatusHistory> StatusHistories => Set<TicketStatusHistory>();
     public DbSet<TicketAssignmentHistory> AssignmentHistories => Set<TicketAssignmentHistory>();
     public DbSet<TicketFeedback> Feedbacks => Set<TicketFeedback>();
+    public DbSet<Notification> Notifications => Set<Notification>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -67,6 +68,12 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.ToTable("TicketFeedbacks");
             e.Property(x => x.Id).HasColumnName("FeedbackId");
             e.Property(x => x.Rating).HasConversion<byte>();
+        });
+
+        b.Entity<Notification>(e =>
+        {
+            e.ToTable("Notifications");
+            e.Property(x => x.Id).HasColumnName("NotificationId");
         });
 
         // Khớp DB: ON DELETE NO ACTION

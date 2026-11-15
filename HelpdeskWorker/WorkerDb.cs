@@ -9,6 +9,8 @@ public class Notification
     public int? TicketId { get; set; }
     public string Title { get; set; } = "";
     public string Message { get; set; } = "";
+    public bool IsRead { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 
 public class WorkerDb(DbContextOptions<WorkerDb> options) : DbContext(options)

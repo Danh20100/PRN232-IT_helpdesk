@@ -10,6 +10,7 @@ public class AppRepository(AppDbContext db)
     public IQueryable<TicketStatusHistory> StatusHistories => db.StatusHistories;
     public IQueryable<TicketAssignmentHistory> AssignmentHistories => db.AssignmentHistories;
     public IQueryable<TicketFeedback> Feedbacks => db.Feedbacks;
+    public IQueryable<Notification> Notifications => db.Notifications;
 
     public void Add<T>(T entity) where T : class => db.Add(entity);
     public Task<Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction> BeginTransactionAsync()

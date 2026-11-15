@@ -48,3 +48,7 @@ public record StatusHistoryDto(string ChangedBy, TicketStatus OldStatus, TicketS
 public record AssignmentHistoryDto(string AssignedBy, int? OldAssigneeId, int NewAssigneeId, DateTime AssignedAt);
 public record FeedbackRequest([Range(1, 5)] int Rating, [StringLength(1000)] string? Comment);
 public record FeedbackDto(int Rating, string? Comment, DateTime CreatedAt);
+
+// ---- Notification ----
+public record NotificationDto(int Id, int? TicketId, string Title, string Message, bool IsRead, DateTime CreatedAt);
+public record NotificationListDto(int UnreadCount, List<NotificationDto> Items);
