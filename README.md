@@ -28,7 +28,7 @@ Cần Docker Desktop và (để chạy script DB) SQL Server Management Studio.
 docker compose up db -d
 ```
 
-Đợi lần đầu khoảng 30–60 giây. SSMS: server `localhost`, SQL Authentication, login `sa`, password `Root@12345`. Mở `db/ITHelpdesk_DatabaseFirst.sql` rồi Execute. Script tạo `ITHelpdeskDB`, bảng và 6 danh mục. Chạy lần hai sẽ lỗi vì bảng đã có; muốn tạo lại thì xóa database rồi Execute lại.
+Đợi lần đầu khoảng 30–60 giây. SSMS: server `localhost,14333`, SQL Authentication, login `sa`, password `Root@12345`. Mở `db/ITHelpdesk_DatabaseFirst.sql` rồi Execute. Script tạo `ITHelpdeskDB`, bảng và 6 danh mục. Chạy lần hai sẽ lỗi vì bảng đã có; muốn tạo lại thì xóa database rồi Execute lại. Cổng host là 14333 vì 1433 đã có SQL Server cài trên Windows.
 
 2. Dựng cả hệ:
 
@@ -41,14 +41,12 @@ docker compose up --build
 | Swagger | http://localhost:8080/swagger |
 | gRPC priority | `localhost:5001` (HTTP/2) |
 | Redis | `localhost:6379`, channel `ticket.status.changed` |
-| SQL Server | `localhost,1433`, DB `ITHelpdeskDB` |
+| SQL Server | `localhost,14333`, login `sa`, password `Root@12345`, DB `ITHelpdeskDB` |
 | React | http://localhost:5173 khi chạy `npm run dev` trong `../fontend` |
 
 Compose gồm `db`, `redis`, `priority`, `worker`, `api`. Service `web` đang tắt vì frontend nằm ngoài repo.
 
 API seed 5 tài khoản khi khởi động, sau khi bảng đã có. Xóa volume: `docker compose down -v`, rồi Execute lại script SQL.
-
-Nếu cổng 1433 đã bị SQL Server trên máy chiếm, đổi map thành `14333:1433` và connection string local thành `localhost,14333`.
 
 ### Chạy dev không Docker hóa API
 
