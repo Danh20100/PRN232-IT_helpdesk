@@ -302,6 +302,13 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
             .OrderBy(g => g.Key)
             .Select(g => new { Date = g.Key.ToString("yyyy-MM-dd"), Count = g.Count() })
             .ToList();
+        var reopenedCount = await repo.StatusHistories
+            .Where(h => h.OldStatus == TicketStatus.Resolved
+                && h.NewStatus == TicketStatus.InProgress
+                && q.Any(t => t.Id == h.TicketId))
+            .Select(h => h.TicketId)
+            .Distinct()
+            .CountAsync();
         var result = new Dictionary<string, object?>
         {
             ["total"] = await q.CountAsync(),
@@ -309,10 +316,12 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
             ["byPriority"] = byPriority,
             ["series"] = series,
             ["overdue"] = await q.CountAsync(t => t.DueDate != null && t.DueDate < now
-                && t.Status != TicketStatus.Resolved && t.Status != TicketStatus.Closed && t.Status != TicketStatus.Cancelled)
+                && t.Status != TicketStatus.Resolved && t.Status != TicketStatus.Closed && t.Status != TicketStatus.Cancelled),
+            ["reopened"] = reopenedCount
         };
         if (role == Role.Admin)
         {
+            result["unassigned"] = await q.CountAsync(t => t.Status == TicketStatus.Open && t.AssignedToId == null);
             result["byCategory"] = await q.GroupBy(t => t.Category!.Name)
                 .Select(g => new { Category = g.Key, Count = g.Count() }).ToListAsync();
             result["byStaff"] = await q.Where(t => t.AssignedToId != null).GroupBy(t => t.AssignedTo!.FullName)
@@ -625,6 +634,14 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
             ? Math.Round(resolvedItems.Average(x => (x.ResolvedAt!.Value - x.SlaStartAt).TotalHours), 2)
             : 0.0;
 
+        // SLA Compliance Rate = Completed đúng hạn (<= 24h) / Tổng ticket đã hoàn thành có SLA * 100%
+        var completedOnTime = resolvedItems.Count(x => x.ResolvedAt!.Value <= x.SlaDeadline);
+        var slaComplianceRate = resolvedItems.Count > 0
+            ? Math.Round((double)completedOnTime / resolvedItems.Count * 100.0, 1)
+            : 0.0;
+
+        var reopenedCount = items.Count(x => x.IsReopened);
+
         var bySlaStatus = new List<SlaStatusCountDto>
         {
             new("NORMAL", onTrack),
@@ -649,7 +666,9 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
             completed,
             avgHours,
             bySlaStatus,
-            completedTrend);
+            completedTrend,
+            slaComplianceRate,
+            reopenedCount);
     }
 
     public async Task<PagedResult<SlaTicketItemDto>> GetSlaTicketsAsync(
@@ -714,8 +733,13 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
         return new PagedResult<SlaTicketItemDto>(page, pageSize, total, paged);
     }
 
-    public async Task<List<StaffSlaPerformanceDto>> GetStaffPerformanceAsync(int userId, Role role)
+    public async Task<List<StaffSlaPerformanceDto>> GetStaffPerformanceAsync(
+        int userId, Role role, DateOnly? from = null, DateOnly? to = null)
     {
+        if (from.HasValue && to.HasValue && from > to) (from, to) = (to, from);
+        DateTime? start = from?.ToDateTime(TimeOnly.MinValue).AddHours(-7);
+        DateTime? end = to?.AddDays(1).ToDateTime(TimeOnly.MinValue).AddHours(-7);
+
         var staffQuery = repo.Users.Where(u => u.Role == Role.Staff && u.IsActive);
         if (role == Role.Staff)
             staffQuery = staffQuery.Where(u => u.Id == userId);
@@ -725,7 +749,7 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
             .Select(u => new { u.Id, u.FullName, u.Email })
             .ToListAsync();
 
-        var items = await LoadScopedSlaItemsAsync(userId, role);
+        var items = await LoadScopedSlaItemsAsync(userId, role, start, end);
 
         return staffList.Select(s =>
         {
@@ -743,6 +767,11 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
             var avgHours = resolvedMine.Count > 0
                 ? Math.Round(resolvedMine.Average(t => (t.ResolvedAt!.Value - t.SlaStartAt).TotalHours), 2)
                 : 0.0;
+            var completedOnTime = resolvedMine.Count(t => t.ResolvedAt!.Value <= t.SlaDeadline);
+            var slaComplianceRate = resolvedMine.Count > 0
+                ? Math.Round((double)completedOnTime / resolvedMine.Count * 100.0, 1)
+                : 0.0;
+            var reopenedCount = mine.Count(t => t.IsReopened);
 
             return new StaffSlaPerformanceDto(
                 s.Id,
@@ -753,7 +782,9 @@ public class TicketService(AppRepository repo, TicketPublisher bus, PriorityClie
                 warning,
                 overdue,
                 completed,
-                avgHours);
+                avgHours,
+                reopenedCount,
+                slaComplianceRate);
         }).ToList();
     }
 

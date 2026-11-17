@@ -64,7 +64,9 @@ public record SlaOverviewDto(
     int Completed,
     double AverageResolutionHours,
     List<SlaStatusCountDto> BySlaStatus,
-    List<SlaTrendPointDto> CompletedTrend);
+    List<SlaTrendPointDto> CompletedTrend,
+    double SlaComplianceRate = 0.0,
+    int ReopenedCount = 0);
 
 public record SlaTicketItemDto(
     int Id,
@@ -98,4 +100,6 @@ public record StaffSlaPerformanceDto(
     int WarningCount,
     int OverdueCount,
     int CompletedCount,
-    double AverageResolutionHours);
+    double AverageResolutionHours,
+    int ReopenedCount = 0,
+    double SlaComplianceRate = 0.0);

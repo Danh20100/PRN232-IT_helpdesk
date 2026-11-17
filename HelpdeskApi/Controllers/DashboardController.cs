@@ -24,6 +24,6 @@ public class DashboardController(TicketService svc) : ControllerBase
         => Ok(await svc.GetSlaTicketsAsync(User.GetId(), User.GetRole(), search, priority, status, staffId, slaStatus, sort, page, pageSize));
 
     [HttpGet("staff-performance"), Authorize(Roles = "Admin,Staff")]
-    public async Task<IActionResult> StaffPerformance()
-        => Ok(await svc.GetStaffPerformanceAsync(User.GetId(), User.GetRole()));
+    public async Task<IActionResult> StaffPerformance([FromQuery] DateOnly? from, [FromQuery] DateOnly? to)
+        => Ok(await svc.GetStaffPerformanceAsync(User.GetId(), User.GetRole(), from, to));
 }
